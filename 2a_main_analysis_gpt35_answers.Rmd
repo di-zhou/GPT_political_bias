@@ -1,0 +1,735 @@
+---
+title: "Analysis of GPT3.5 Answers"
+author: "Di Zhou, Yinxian Zhang"
+date: "2023-03-30"
+output:
+  pdf_document: default
+  html_document: default
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, readr, readxl, writexl, 
+               table1, stargazer, gridExtra, MASS, 
+               stringi, ggpubr)
+
+```
+
+```{r import and simple clean data}
+
+# combine rerun and recoded questions 
+df <- read_csv("1a_master_df_gpt35.csv")
+# 717 obs
+
+# set factor levels
+df$topic_focus <- factor(df$topic_focus, level = c("Science", "US", "CN"))
+df$is_consistent <- factor(df$is_consistent, level = c("consistent",
+                                                       "somewhat consistent",
+                                                       "somewhat inconsistent",
+                                                       "inconsistent"))
+
+df$consist_handcode_binary <- factor(df$consist_handcode_binary, level = c("consistent", 
+                                                               "inconsistent"))
+
+df$binary_or_statement <- factor(df$binary_or_statement, level = c("yesno", "statement"))
+
+df$fact_or_opinion <- factor(df$fact_or_opinion, level = c("opinion", "fact"))
+```
+
+## Descriptive Tables
+
+```{r Table 1 Distribution of country focus and fact opinion}
+# Table 1 Distribution of Answer Consistency by Question Type
+table1 = table1(~ fact_or_opinion + binary_or_statement | topic_focus, 
+               data = df, round_pad = 3) %>%
+  as.data.frame()
+# Save the summary table to an Excel file
+write_xlsx(table1, "table/table1.xlsx")
+
+```
+
+```{r Table S1 and S2 distribution of key variables}
+# Remove science questions sentiment
+df_s1 = df %>%
+  mutate(answer_cn_sent_num_CN_classifier = ifelse(topic_focus == "Science", NA,
+                                                   answer_cn_sent_num_CN_classifier),
+         answer_eng_sent_num_CN_classifier = ifelse(topic_focus == "Science", NA,
+                                                   answer_eng_sent_num_CN_classifier),
+         answer_sent_cn_eng_diff_CN_classifier = ifelse(topic_focus == "Science", NA,
+                                                   answer_sent_cn_eng_diff_CN_classifier))
+tableS1 = table1(~ consist_handcode_binary_num + 
+                   consist_EN_classifier_num +
+                   consist_CN_classifier_num +
+                   answer_cn_sent_num_CN_classifier +
+                   answer_cn_sent_num_EN_classifier +
+                   answer_eng_sent_num_CN_classifier +
+                   answer_eng_sent_num_EN_classifier +
+                   answer_sent_cn_eng_diff_CN_classifier +
+                   answer_sent_cn_eng_diff_EN_classifier + 
+                   fact_or_opinion + binary_or_statement +
+                   answer_cn_length + answer_eng_length | topic_focus, 
+               data = df_s1, round_pad = 3) %>%
+  as.data.frame()
+# Save the summary table to an Excel file
+write_xlsx(tableS1, "table/tableS1.xlsx")
+
+tableS2 = table1(~ is_consistent +
+                   consist_handcode_binary | topic_focus, 
+               data = df_s1, round_pad = 3) %>%
+  as.data.frame()
+# Save the summary table to an Excel file
+write_xlsx(tableS2, "table/tableS2.xlsx")
+
+```
+
+
+```{r bootstrap consistency}
+# Overall consistency level
+consis_mean = df %>%
+  group_by(topic_focus, fact_or_opinion) %>%
+  summarise(mean_consist = mean(consist_handcode_binary_num))
+
+consis_mean_allpol = df %>%
+  filter(accused_problem == 1) %>%
+  group_by(fact_or_opinion) %>%
+  summarise(mean_consist = mean(consist_handcode_binary_num)) %>%
+  mutate(topic_focus = "All Political")
+
+consis_mean_allpol_all = df %>%
+  filter(accused_problem == 1) %>%
+  summarise(mean_consist = mean(consist_handcode_binary_num)) %>%
+  mutate(topic_focus = "All Political",
+         fact_or_opinion = "overall")
+
+consis_mean_byCountry = df %>%
+  filter(accused_problem == 1) %>%
+  group_by(topic_focus) %>%
+  summarise(mean_consist = mean(consist_handcode_binary_num)) %>%
+  mutate(fact_or_opinion = "overall")
+
+consis_mean = rbind(consis_mean, 
+                    consis_mean_allpol, 
+                    consis_mean_allpol_all,
+                    consis_mean_byCountry)
+
+
+# Sample
+set.seed(123)
+sims = 200
+samples =  vector(mode = "list", length = sims)
+samples = lapply(samples, function(x){slice_sample(df, n = nrow(df), replace = TRUE)})
+
+
+#### ------ Consistency of US-fact questions-----
+US_fact = lapply(samples, function(df){mean(df[df$topic_focus=="US" & df$fact_or_opinion=="fact",]$consist_handcode_binary_num)})
+US_fact_boot_CI = US_fact %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "fact", topic_focus = "US")
+#### ------ Consistency of US-opinion questions-----
+US_opin = lapply(samples, function(df){mean(df[df$topic_focus=="US" & df$fact_or_opinion=="opinion",]$consist_handcode_binary_num)})
+US_opin_boot_CI = US_opin %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "opinion", topic_focus = "US")
+#### ------ Consistency of US all questions-----
+US_all = lapply(samples, function(df){mean(df[df$topic_focus=="US",]$consist_handcode_binary_num)})
+US_all_boot_CI = US_all %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "overall", topic_focus = "US")
+
+#### ------ Consistency of CN-fact questions-----
+CN_fact = lapply(samples, function(df){mean(df[df$topic_focus=="CN" & df$fact_or_opinion=="fact",]$consist_handcode_binary_num)})
+CN_fact_boot_CI = CN_fact %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "fact", topic_focus = "CN")
+#### ------ Consistency of CN-opinion questions-----
+CN_opin = lapply(samples, function(df){mean(df[df$topic_focus=="CN" & df$fact_or_opinion=="opinion",]$consist_handcode_binary_num)})
+CN_opin_boot_CI = CN_opin %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "opinion", topic_focus = "CN")
+#### ------ Consistency of CN all questions-----
+CN_all = lapply(samples, function(df){mean(df[df$topic_focus=="CN",]$consist_handcode_binary_num)})
+CN_all_boot_CI = CN_all %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "overall", topic_focus = "CN")
+
+#### ------ Consistency of Science(all fact) questions-----
+sci_fact = lapply(samples, function(df){mean(df[df$topic_focus=="Science",]$consist_handcode_binary_num)})
+sci_boot_CI = sci_fact %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "fact", topic_focus = "Science")
+
+#### ------ Consistency of all political fact questions-----
+pol_fact = lapply(samples, function(df){mean(df[df$accused_problem==1 & df$fact_or_opinion=="fact",]$consist_handcode_binary_num)})
+pol_fact_boot_CI = pol_fact %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "fact", topic_focus = "All Political")
+#### ------ Consistency of all political opinion questions-----
+pol_opin = lapply(samples, function(df){mean(df[df$accused_problem==1 & df$fact_or_opinion=="opinion",]$consist_handcode_binary_num)})
+pol_opin_boot_CI = pol_opin %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "opinion", topic_focus = "All Political")
+#### ------ Consistency of all political questions-----
+pol_all = lapply(samples, function(df){mean(df[df$accused_problem==1,]$consist_handcode_binary_num)})
+pol_all_boot_CI = pol_all %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(fact_or_opinion = "overall", topic_focus = "All Political")
+
+
+### Summary table
+CI_df = rbind(sci_boot_CI,
+              US_opin_boot_CI,
+              US_fact_boot_CI,
+              US_all_boot_CI,
+              CN_opin_boot_CI,
+              CN_fact_boot_CI, 
+              CN_all_boot_CI,
+              pol_opin_boot_CI,
+              pol_fact_boot_CI,
+              pol_all_boot_CI)
+
+### attach to mean
+consist_mean_CI = consis_mean %>%
+  full_join(CI_df, by = c("fact_or_opinion", "topic_focus"))
+
+consist_mean_CI$topic_focus = factor(consist_mean_CI$topic_focus, 
+                                 levels = c("CN", "US", "Science", "All Political"))
+consist_mean_CI$fact_or_opinion = factor(consist_mean_CI$fact_or_opinion, 
+                                 levels = c("opinion", "fact", "overall"))
+# Save the summary table to an Excel file
+write_xlsx(consist_mean_CI, "table/tableS3.xlsx")
+
+### plot
+consist_mean_CI %>%
+  filter(topic_focus != "Science") %>%
+  ggplot(aes(x = topic_focus, group = fact_or_opinion, color = fact_or_opinion)) +
+  geom_hline(yintercept = consist_mean_CI$mean_consist[consis_mean$topic_focus=="Science"], 
+             color = "grey", linetype = "solid") +
+  geom_hline(yintercept = consist_mean_CI$ci_low[consis_mean$topic_focus=="Science"], 
+             color = "grey", linetype = "dashed") +
+  geom_hline(yintercept = consist_mean_CI$ci_high[consis_mean$topic_focus=="Science"], 
+             color = "grey", linetype = "dashed") +
+  geom_point(aes(y = mean_consist),
+             position=position_dodge(width=0.5)) + 
+  geom_errorbar(aes(ymin = abs(ci_high), ymax = abs(ci_low)), 
+                position=position_dodge(width=0.5),
+                width = 0) +
+  scale_color_discrete(breaks=c('overall', 'opinion', 'fact')) +
+  scale_color_manual(values=c("overall" = "black", "opinion" = "#FFD700", "fact" = "#CC79A7")) +
+  coord_flip() +
+  xlab("")+
+  ylab("% Consistent") +
+  labs(color = "Group") +
+  theme_classic() +
+  ylim(0.5, 1)
+
+ggsave("graph/figure1.pdf", width = 7, height = 4)
+
+```
+
+## Answer consistency
+
+```{r chi-square Science vs political overall}
+
+# science vs political questions
+
+# 1.Handcode
+result <- chisq.test(xtabs(~ consist_handcode_binary + accused_problem, data = df))
+result
+# X-squared = 4.2731, df = 1, p-value = 0.03872
+
+# 2.GPT3.5 English classifier
+result <- chisq.test(xtabs(~ consist_EN_classifier + accused_problem, data = df))
+result
+# X-squared = 0.47035, df = 1, p-value = 0.4928
+
+# 3.GPT3.5 Chinese classifier
+result <- chisq.test(xtabs(~ consist_CN_classifier + accused_problem, data = df))
+result
+# X-squared = 1.6453, df = 1, p-value = 0.1996
+
+
+```
+```{r chi-square Science vs US overall}
+
+#  Science vs US overall
+testdf = df %>%
+  mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "US"|topic_focus == "Science")
+
+## Handcode
+result <- chisq.test(xtabs(~ consist_handcode_binary + topic_focus, data = testdf))
+result
+# X-squared = 0.24049, df = 1, p-value = 0.6239
+
+## English Classifier
+result <- chisq.test(xtabs(~ consist_EN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 0.79465, df = 1, p-value = 0.3727
+
+## Chinese Classifier
+result <- chisq.test(xtabs(~ consist_CN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 4.4196e-31, df = 1, p-value = 1
+
+```
+
+```{r chi-square Science vs CN overall}
+
+#  CN vs nonpolitical
+testdf = df %>%
+  mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "CN"|topic_focus == "Science")
+
+## Handcode
+result <- chisq.test(xtabs( ~ consist_handcode_binary + topic_focus, data = testdf))
+result
+# X-squared = 9.5358, df = 1, p-value = 0.002015
+
+## Eng classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 4.4459, df = 1, p-value = 0.03498
+
+## Chn classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 5.6152, df = 1, p-value = 0.0178
+
+```
+
+```{r chi-square China overall vs US overall}
+
+# CN vs US political
+testdf = df %>%
+    mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "CN" | topic_focus == "US") 
+
+## Handcode
+result <- chisq.test(xtabs( ~ consist_handcode_binary + topic_focus, data = testdf))
+result
+# X-squared = 8.0653, df = 1, p-value = 0.004512
+
+## Eng classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 12.125, df = 1, p-value = 0.0004976
+
+## Chn classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 7.9193, df = 1, p-value = 0.004891
+
+
+```
+
+```{r chi-square Fact vs Opinion All Political Questions}
+
+# all political questions
+testdf = df %>%
+    mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "CN" | topic_focus == "US") 
+
+## Handcode
+result <- chisq.test(xtabs( ~ consist_handcode_binary + fact_or_opinion, data = testdf))
+result
+# X-squared = 5.0088, df = 1, p-value = 0.02522
+
+## Eng classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 12.425, df = 1, p-value = 0.0004236
+
+## Chn classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 4.8799, df = 1, p-value = 0.02717
+
+```
+```{r chi-square Fact vs Opinion China focused Questions}
+
+# China-focused questions only
+testdf = df %>%
+  mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "CN") 
+
+## Handcode
+result <- chisq.test(xtabs( ~ consist_handcode_binary + fact_or_opinion, data = testdf))
+result
+# X-squared = 1.6865, df = 1, p-value = 0.1941
+
+## Eng classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 4.0617, df = 1, p-value = 0.04387
+
+## Chn classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 0.0047191, df = 1, p-value = 0.9452
+
+
+```
+```{r chi-square Fact vs Opinion US focused Questions}
+
+# China-focused questions only
+testdf = df %>%
+  mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "US") 
+
+## Handcode
+result <- chisq.test(xtabs( ~ consist_handcode_binary + fact_or_opinion, data = testdf))
+result
+# X-squared = 3.3283, df = 1, p-value = 0.0681
+
+## Eng classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 9.4012, df = 1, p-value = 0.002168
+
+## Chn classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 10.662, df = 1, p-value = 0.001094
+
+
+```
+
+
+```{r consistency LPM model}
+# create a subset that contains only political questions
+df_nosci = df %>% filter(topic_focus != "Science")
+# Since all science questions are fact, 
+# we avoid having fact_or_opinion and topic_focus in the same model
+
+# Handcoding
+m1 = lm(consist_handcode_binary_num ~ topic_focus, data = df_nosci)
+summary(m1)$coefficients[,4]
+m2 = lm(consist_handcode_binary_num ~ topic_focus + fact_or_opinion + binary_or_statement + answer_sent_cn_eng_diff_CN_classifier + answer_cn_length_diff, data = df_nosci)
+summary(m2)$coefficients[,4]
+m2b = lm(consist_handcode_binary_num ~ topic_focus + fact_or_opinion*binary_or_statement + answer_sent_cn_eng_diff_CN_classifier + answer_cn_length_diff, data = df_nosci)
+summary(m2b)$coefficients[,4]
+
+
+# EN classifier
+m4 = lm(consist_EN_classifier_num ~ topic_focus, data = df_nosci)
+summary(m4)$coefficients[,4]
+m5 = lm(consist_EN_classifier_num ~ topic_focus + fact_or_opinion + binary_or_statement + answer_sent_cn_eng_diff_EN_classifier + answer_eng_length_diff, data = df_nosci)
+summary(m5)$coefficients[,4]
+m5b = lm(consist_EN_classifier_num ~ topic_focus + fact_or_opinion*binary_or_statement + answer_sent_cn_eng_diff_EN_classifier + answer_eng_length_diff, data = df_nosci)
+summary(m5b)$coefficients[,4]
+
+# CN classifier
+m6 = lm(consist_CN_classifier_num ~ topic_focus, data = df_nosci)
+summary(m6)$coefficients[,4]
+m7 = lm(consist_CN_classifier_num ~ topic_focus + fact_or_opinion + binary_or_statement + answer_sent_cn_eng_diff_CN_classifier + answer_cn_length_diff, data = df_nosci)
+summary(m7)$coefficients[,4]
+m7b = lm(consist_CN_classifier_num ~ topic_focus + fact_or_opinion*binary_or_statement + answer_sent_cn_eng_diff_CN_classifier + answer_cn_length_diff, data = df_nosci)
+summary(m7b)$coefficients[,4]
+
+
+stargazer(m1, m2, m4, m5, m6, m7, 
+          type = "text",
+          omit.stat = c("f", "ser"),
+          star.char = c("*", "**", "***"),
+          star.cutoffs = c(.05, .01, .005))
+```
+
+## Answer sentiment
+
+```{r sentiment by GPT language with bootstrap CI}
+
+# Mean by country focus and GPT language 
+mean_sent_by_lang = df %>%
+  group_by(topic_focus) %>%
+  summarise(cn_sent_mean = mean(answer_cn_sent_num_CN_classifier, na.rm = T), 
+            eng_sent_mean = mean(answer_eng_sent_num_CN_classifier, na.rm = T)) 
+
+# To construct a confidence interval of the mean sentiment
+# we perform bootstrapping to create a CI for:
+# Mean sentiment for CN GPT on US-focused questions
+# Mean sentiment for EN GPT on US-focused questions
+# Mean sentiment for CN GPT on US-focused questions 
+# Mean sentiment for EN GPT on CN-focused questions
+
+# Sample
+set.seed(123)
+sims = 200
+samples =  vector(mode = "list", length = sims)
+samples = lapply(samples, function(x){slice_sample(df, n = nrow(df), replace = TRUE)})
+
+
+#### ------ US-focused questions, CN GPT sentiment-----
+US_focus_CN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="US",]$answer_cn_sent_num_CN_classifier)})
+US_focus_CN_gpt_boot_CI = US_focus_CN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(Lang = "Simp Chinese GPT", topic_focus = "US")
+
+####------US-focused questions, EN GPT sentiment-----
+US_focus_EN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="US",]$answer_eng_sent_num_CN_classifier)})
+US_focus_EN_gpt_boot_CI = US_focus_EN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(Lang = "Eng GPT", topic_focus = "US")
+
+####------ CN-focused questions, CN GPT sentiment ---------
+CN_focus_CN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="CN",]$answer_cn_sent_num_CN_classifier)})
+CN_focus_CN_gpt_boot_CI = CN_focus_CN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(Lang = "Simp Chinese GPT", topic_focus = "CN")
+
+####------ CN-focused questions, EN GPT sentiment ---------
+CN_focus_EN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="CN",]$answer_eng_sent_num_CN_classifier)})
+CN_focus_EN_gpt_boot_CI = CN_focus_EN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(Lang = "Eng GPT", topic_focus = "CN")
+
+
+#### ------ Science questions, CN GPT sentiment-----
+Science_CN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="Science",]$answer_cn_sent_num_CN_classifier)})
+Science_CN_gpt_boot_CI = Science_CN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(Lang = "Simp Chinese GPT", topic_focus = "Science")
+
+####------Science questions, EN GPT sentiment-----
+Science_EN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="Science",]$answer_eng_sent_num_CN_classifier)})
+Science_EN_gpt_boot_CI = Science_EN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(Lang = "Eng GPT", topic_focus = "Science")
+
+
+
+### Summary table
+CI_df = rbind(US_focus_CN_gpt_boot_CI,
+              US_focus_EN_gpt_boot_CI,
+              CN_focus_CN_gpt_boot_CI,
+              CN_focus_EN_gpt_boot_CI,
+              Science_CN_gpt_boot_CI,
+              Science_EN_gpt_boot_CI)
+
+# Bar plot, us-focused sentiment only
+df_sent_long = df %>%
+  dplyr::select(qid:fact_or_opinion, 
+                answer_cn_sent_num_CN_classifier, answer_eng_sent_num_CN_classifier, topic_focus) %>%
+  pivot_longer(cols = answer_cn_sent_num_CN_classifier:answer_eng_sent_num_CN_classifier, names_to = "Lang") %>%
+  mutate(Lang = ifelse(Lang == "answer_cn_sent_num_CN_classifier", "Simp Chinese GPT", "Eng GPT"))
+
+df_sent_long_summary = df_sent_long %>%
+  group_by(Lang, topic_focus) %>%
+  summarise(issue_mean = mean(value)) %>%
+  left_join(CI_df, by = c("Lang", "topic_focus")) %>%
+  mutate(self_other = case_when(
+    topic_focus == "Science" ~ NA,
+    Lang == "Simp Chinese GPT" & topic_focus == "CN" | Lang == "Eng GPT" & topic_focus == "US" ~ "Self",
+    TRUE ~ "Other"))
+
+```
+
+```{r Table S5 mean sent with CI and t-test}
+df_S5 = df_sent_long_summary %>% 
+  filter(topic_focus != "Science")
+
+write_xlsx(df_S5, "table/tableS5.xlsx")
+
+```
+
+```{r bar plot two panels}
+
+overall_mean_us_issue = df_sent_long_summary %>%
+  ungroup() %>%
+  filter(topic_focus == "US") %>%
+  summarise(mean = mean(issue_mean)) %>%
+  pull(mean)
+
+p1 = df_sent_long_summary %>%
+  filter(topic_focus == "CN") %>%
+  ggplot(aes(x = Lang, y = abs(issue_mean))) +
+  geom_hline(yintercept = abs(overall_mean_us_issue), color = "grey", linetype = "dashed") +
+  geom_point(aes(color = Lang), shape = 8) +
+  geom_errorbar(aes(ymin = abs(ci_high), ymax = abs(ci_low), color = Lang), width = 0.05) +
+  scale_color_manual(values=c("#0072B2", "#D55E00")) +
+  ylim(-0.1,0.7) +
+  ggtitle("China-related Issues") +
+  ylab("Level of Negativity") + 
+  theme_classic() +
+  theme(legend.position="none", 
+        axis.title.x = element_blank())
+
+p2 = df_sent_long_summary %>%
+  filter(topic_focus == "US") %>%
+  ggplot(aes(x = Lang, y = abs(issue_mean), group = Lang)) +
+  geom_hline(yintercept = abs(overall_mean_us_issue), color = "grey", linetype = "dashed") +
+  geom_point(aes(color = Lang), shape = 8) +
+  #geom_bar(aes(color = Lang), stat = "identity", width = 0.5, fill = "white") +
+  geom_errorbar(aes(ymin = abs(ci_high), ymax = abs(ci_low), color = Lang), width = 0.05) +
+  scale_color_manual(values=c("#0072B2", "#D55E00")) +
+  ylim(-0.1,0.7) +
+  ggtitle("US-related Issues") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.title = element_blank())
+
+ggarrange(p1, p2, 
+          labels = c("A", "B"),
+          ncol = 2)
+
+ggsave("graph/figure2.pdf", width = 8, height = 4)
+
+```
+
+```{r bar plot on self and other issues}
+
+# Bar plot
+pa_plot = df_sent_long_summary %>%
+  filter(Lang == "Eng GPT" & topic_focus != "Science") %>%
+  mutate(self_other = ifelse(self_other == "Self", "Self(US)", "Other(China)")) 
+pa_plot$self_other = factor(pa_plot$self_other, level = c("Self(US)", "Other(China)"))
+pa = pa_plot %>%
+  ggplot(aes(x = self_other, y = issue_mean)) +
+  geom_bar(color = "#0072B2", fill = NA, stat = "identity") +
+  geom_errorbar(aes(ymin = ci_high, ymax = ci_low), width = 0.05, color = "#0072B2") + 
+  ylim(-0.85, 0.15) +
+  ggtitle("English GPT") +
+  ylab("Mean Sentiment") + 
+  xlab("") +
+  theme_classic() 
+
+
+pb_plot = df_sent_long_summary %>%
+  filter(Lang == "Simp Chinese GPT" & topic_focus != "Science") %>%
+  mutate(self_other = ifelse(self_other == "Self", "Self(China)", "Other(US)")) 
+pb_plot$self_other = factor(pb_plot$self_other, level = c("Self(China)", "Other(US)"))
+pb = pb_plot %>%
+  ggplot(aes(x = self_other, y = issue_mean)) +
+  geom_bar(color = "#D55E00", fill = NA, stat = "identity") +
+  geom_errorbar(aes(ymin = ci_high, ymax = ci_low), width = 0.05, color = "#D55E00") + 
+  ylim(-0.85, 0.15) +
+  ggtitle("Simplified Chinese GPT") +
+  ylab("") + 
+  xlab("") +
+  theme_classic()
+
+ggarrange(pa, pb, 
+          labels = c("A", "B"),
+          ncol = 2)
+
+ggsave("graph/figure3.pdf", width = 7, height = 5)
+
+```
+
+
+```{r sentiment t test}
+
+# two group t-test
+GPTon_CN = subset(df, topic_focus == "CN")
+GPTon_US = subset(df, topic_focus == "US")
+
+# For EN gpt, mean sentiment for CN-focused vs. mean sentiment for US-focused
+## EN classifier (Robustness Check)
+t.test(GPTon_CN$answer_eng_sent_num_EN_classifier, GPTon_US$answer_eng_sent_num_EN_classifier, paired = F)
+# t = -4.896, df = 530.25, p-value = 1.3e-06
+## CN classifier (Main Analysis)
+t.test(GPTon_CN$answer_eng_sent_num_CN_classifier, GPTon_US$answer_eng_sent_num_CN_classifier, paired = F)
+# t = -4.418, df = 530.67, p-value = 1.208e-05
+
+
+# For CN gpt, mean sentiment for CN-focused vs. mean sentiment for US-focused
+## EN classifier (Robustness Check)
+t.test(GPTon_CN$answer_cn_sent_num_EN_classifier, GPTon_US$answer_cn_sent_num_EN_classifier, paired = F)
+#t = 2.8523, df = 522.31, p-value = 0.004513
+## CN classifier (Main Analysis)
+t.test(GPTon_CN$answer_cn_sent_num_CN_classifier, GPTon_US$answer_cn_sent_num_CN_classifier, paired = F)
+# t = 2.5745, df = 521.39, p-value = 0.01031
+
+
+# For the same CN-focused questions, the mean sentiment of cn GPT vs. eng GPT 
+## EN classifier (Robustness Check)
+t.test(GPTon_CN$answer_cn_sent_num_EN_classifier, GPTon_CN$answer_eng_sent_num_EN_classifier, paired = T)
+#t = 8.3376, df = 265, p-value = 4.169e-15
+## CN classifier (Main Analysis)
+t.test(GPTon_CN$answer_cn_sent_num_CN_classifier, GPTon_CN$answer_eng_sent_num_CN_classifier, paired = T)
+# t = 7.8317, df = 265, p-value = 1.163e-13
+
+
+# For the same US-focused questions, the mean sentiment of cn GPT vs. eng GPT
+## EN classifier (Robustness Check)
+t.test(GPTon_US$answer_cn_sent_num_EN_classifier, GPTon_US$answer_eng_sent_num_EN_classifier, paired = T)
+#t = -0.18864, df = 265, p-value = 0.8505
+## CN classifier (Main Analysis)
+t.test(GPTon_US$answer_cn_sent_num_CN_classifier, GPTon_US$answer_eng_sent_num_CN_classifier, paired = T)
+# t = 0.38077, df = 266, p-value = 0.7037
+
+```
+
+```{r sentiment OLS}
+
+## CN classifier
+m1s = lm(answer_sent_cn_eng_diff_CN_classifier ~ topic_focus, data = df_nosci)
+summary(m1s)$coefficients[,4]
+m3s = lm(answer_sent_cn_eng_diff_CN_classifier ~ topic_focus + consist_CN_classifier_num + fact_or_opinion + binary_or_statement + answer_cn_length_diff, data = df_nosci)
+summary(m3s)$coefficients[,4]
+
+## EN classifier
+m4s = lm(answer_sent_cn_eng_diff_EN_classifier ~ topic_focus, data = df_nosci)
+summary(m4s)$coefficients[,4]
+m6s = lm(answer_sent_cn_eng_diff_EN_classifier ~ topic_focus + consist_EN_classifier_num + fact_or_opinion + binary_or_statement + answer_eng_length_diff, data = df_nosci)
+summary(m6s)$coefficients[,4]
+
+
+stargazer(m4s, m6s, m1s, m3s, 
+          type = "text",
+          omit.stat = c("f", "ser"),
+          star.char = c("*", "**", "***"),
+          star.cutoffs = c(.05, .01, .005))
+```

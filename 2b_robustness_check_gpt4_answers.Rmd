@@ -1,0 +1,334 @@
+---
+title: "Robustness Check: GPT 4"
+author: "Di Zhou, Yinxian Zhang"
+date: "2023-10-17"
+output:
+  pdf_document: default
+  html_document: default
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, readr, readxl, writexl, 
+               table1, stargazer, gridExtra, MASS, stringi, ggpubr)
+
+```
+
+```{r import and simple clean data}
+
+# combine rerun and recoded questions 
+df <- read_csv("1b_master_df_gpt4.csv")
+df = df %>% 
+  rename(topic_focus = `country-focus`) %>%
+  mutate(topic_focus = ifelse(topic_focus == "None", "Science", topic_focus),
+         consist_CN_classifier_num = ifelse(consist_CN_classifier == "consistent", 1, 0), 
+         consist_EN_classifier_num = ifelse(consist_EN_classifier == "consistent", 1, 0))
+
+# set factor levels
+df$topic_focus <- factor(df$topic_focus, level = c("Science", "US", "CN"))
+df$consist_EN_classifier <- factor(df$consist_EN_classifier, 
+                                   level = c("consistent", "inconsistent"))
+df$consist_CN_classifier <- factor(df$consist_CN_classifier, 
+                                   level = c("consistent", "inconsistent"))
+
+df$binary_or_statement <- factor(df$binary_or_statement, level = c("yesno", "statement"))
+
+df$fact_or_opinion <- factor(df$fact_or_opinion, level = c("opinion", "fact"))
+
+```
+
+## Answer consistency: Chi-square tests
+
+```{r chi-square science vs political}
+
+## English classifier
+result <- chisq.test(xtabs(~ consist_EN_classifier + accused_problem, data = df))
+result
+# X-squared = 1.1631, df = 1, p-value = 0.2808
+
+## Chinese classifier
+result <- chisq.test(xtabs(~ consist_CN_classifier + accused_problem, data = df))
+result
+# X-squared = 3.2424, df = 1, p-value = 0.07175
+```
+```{r chi-squre science vs US}
+testdf = df %>%
+  mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "US"|topic_focus == "Science") 
+
+## English classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 1.2482, df = 1, p-value = 0.2639
+
+## Chinese classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 0.022865, df = 1, p-value = 0.8798
+
+```
+
+```{r chi-squre science vs China}
+testdf = df %>%
+  mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "CN"|topic_focus == "Science")
+
+## English classifier
+result <- chisq.test(xtabs(~ consist_EN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 7.6105, df = 1, p-value = 0.005803
+
+## Chinese classifier
+result <- chisq.test(xtabs(~ consist_CN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 8.2545, df = 1, p-value = 0.004065
+
+```
+```{r chi-squre China vs US}
+testdf = df %>%
+    mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "CN" | topic_focus == "US")
+
+## English classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 19.881, df = 1, p-value = 8.243e-06
+
+## Chinese classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + topic_focus, data = testdf))
+result
+# X-squared = 8.7779, df = 1, p-value = 0.003049
+
+```
+
+```{r chi-squre Fact vs Opinion All political Questions}
+testdf = df %>%
+  mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "CN" | topic_focus == "US")
+
+## English classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 5.0044, df = 1, p-value = 0.02528
+
+## Chinese classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 2.668, df = 1, p-value = 0.1024
+
+```
+
+```{r chi-squre Fact vs Opinion US focused Questions}
+
+testdf = df %>%
+  mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "US")
+
+## English classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 2.9859, df = 1, p-value = 0.084
+
+## Chinese classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 2.6748, df = 1, p-value = 0.1019
+
+
+```
+
+```{r chi-squre Fact vs Opinion China focused Questions}
+
+testdf = df %>%
+  mutate(topic_focus = as.character(topic_focus)) %>%
+  filter(topic_focus == "CN")
+
+## English classifier
+result <- chisq.test(xtabs( ~ consist_EN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 2.2435, df = 1, p-value = 0.1342
+
+## Chinese classifier
+result <- chisq.test(xtabs( ~ consist_CN_classifier + fact_or_opinion, data = testdf))
+result
+# X-squared = 0.47427, df = 1, p-value = 0.491
+
+```
+
+## Answer consistency: LPM and logistic modeling
+```{r consistency LPM}
+# create a subset that contains only political questions
+df_nosci = df %>% filter(accused_problem == 1)
+df_nosci$topic_focus = factor(df_nosci$topic_focus, levels = c("US", "CN"))
+# Since all science questions are fact, 
+# we avoid having fact_or_opinion and topic_focus in the same model
+
+# EN classifier
+m4_gpt4 = lm(consist_EN_classifier_num ~ topic_focus, data = df_nosci)
+summary(m4_gpt4)$coefficients[,4]
+m5_gpt4 = lm(consist_EN_classifier_num ~ topic_focus + fact_or_opinion + binary_or_statement + answer_sent_cn_eng_diff_EN_classifier + answer_eng_length_diff, data = df_nosci)
+summary(m5_gpt4)$coefficients[,4]
+
+# CN classifier
+m7_gpt4 = lm(consist_CN_classifier_num ~ topic_focus, data = df_nosci)
+summary(m7_gpt4)$coefficients[,4]
+m8_gpt4 = lm(consist_CN_classifier_num ~ topic_focus + fact_or_opinion + binary_or_statement + answer_sent_cn_eng_diff_CN_classifier + answer_cn_length_diff, data = df_nosci)
+summary(m8_gpt4)$coefficients[,4]
+
+stargazer(m4_gpt4, m5_gpt4, m7_gpt4, m8_gpt4,
+          type = "text",
+          omit.stat = c("f", "ser"),
+          star.char = c("*", "**", "***"),
+          star.cutoffs = c(.05, .01, .005))
+```
+
+## Answer sentiment
+
+```{r mean sentiment with bootstrap CI}
+
+df_sent = df %>% filter(topic_focus != "None")
+# To construct a confidence interval of the mean sentiment
+# we perform bootstrapping to create a CI for:
+# Mean sentiment for CN GPT on US-focused questions
+# Mean sentiment for EN GPT on US-focused questions
+# Mean sentiment for CN GPT on US-focused questions 
+# Mean sentiment for EN GPT on CN-focused questions
+
+# Sample
+set.seed(123)
+sims = 200
+samples =  vector(mode = "list", length = sims)
+samples = lapply(samples, function(x){slice_sample(df_sent, n = nrow(df_sent), replace = TRUE)})
+
+
+#### ------ US-focused questions, CN GPT sentiment-----
+US_focus_CN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="US",]$answer_cn_sent_num_CN_classifier)})
+US_focus_CN_gpt_boot_CI = US_focus_CN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.005),
+            ci_high = quantile(., probs = 0.995)) %>%
+  mutate(Lang = "Simp Chinese GPT", topic_focus = "US")
+
+####------US-focused questions, EN GPT sentiment-----
+US_focus_EN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="US",]$answer_eng_sent_num_CN_classifier)})
+US_focus_EN_gpt_boot_CI = US_focus_EN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.005),
+            ci_high = quantile(., probs = 0.995)) %>%
+  mutate(Lang = "Eng GPT", topic_focus = "US")
+
+####------ CN-focused questions, CN GPT sentiment ---------
+CN_focus_CN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="CN",]$answer_cn_sent_num_CN_classifier)})
+CN_focus_CN_gpt_boot_CI = CN_focus_CN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(Lang = "Simp Chinese GPT", topic_focus = "CN")
+
+####------ CN-focused questions, EN GPT sentiment ---------
+CN_focus_EN_gpt = lapply(samples, function(df){mean(df[df$topic_focus=="CN",]$answer_eng_sent_num_CN_classifier)})
+CN_focus_EN_gpt_boot_CI = CN_focus_EN_gpt %>% 
+  unlist() %>%
+  data.frame()%>%
+  summarise(ci_low = quantile(., probs = 0.025),
+            ci_high = quantile(., probs = 0.975)) %>%
+  mutate(Lang = "Eng GPT", topic_focus = "CN")
+
+### Summary table
+CI_df = rbind(US_focus_CN_gpt_boot_CI,
+              US_focus_EN_gpt_boot_CI,
+              CN_focus_CN_gpt_boot_CI,
+              CN_focus_EN_gpt_boot_CI)
+
+### Group mean table
+df_sent_long = df_sent %>%
+  dplyr::select(qid:fact_or_opinion, answer_cn_sent_num_CN_classifier:answer_eng_sent_num_CN_classifier) %>%
+  pivot_longer(cols = answer_cn_sent_num_CN_classifier:answer_eng_sent_num_CN_classifier, names_to = "Lang") %>%
+  mutate(Lang = ifelse(Lang == "answer_cn_sent_num_CN_classifier", "Simp Chinese GPT", "Eng GPT"))
+
+df_sent_long_summary = df_sent_long %>%
+  group_by(Lang, topic_focus) %>%
+  summarise(issue_mean = mean(value)) %>%
+  left_join(CI_df, by = c("Lang", "topic_focus"))
+
+
+```
+
+
+```{r sentiment t test Chinese classifier}
+
+# two group t-test
+GPTon_CN = subset(df_sent, topic_focus == "CN")
+GPTon_US = subset(df_sent, topic_focus == "US")
+
+# For CN gpt, mean sentiment for CN-focused vs. mean sentiment for US-focused
+## EN classifier
+t.test(GPTon_CN$answer_cn_sent_num_EN_classifier, GPTon_US$answer_cn_sent_num_EN_classifier, paired = F)
+# t = 4.078, df = 526.9, p-value = 5.245e-05
+## CN classifier
+t.test(GPTon_CN$answer_cn_sent_num_CN_classifier, GPTon_US$answer_cn_sent_num_CN_classifier, paired = F)
+# t = 3.6179, df = 517.8, p-value = 0.0003261
+
+
+# For EN gpt, mean sentiment for CN-focused vs. mean sentiment for US-focused
+## EN Classifier
+t.test(GPTon_CN$answer_eng_sent_num_EN_classifier, GPTon_US$answer_eng_sent_num_EN_classifier, paired = F)
+# t = -4.7286, df = 527.26, p-value = 2.906e-06
+## CN Classifier
+t.test(GPTon_CN$answer_eng_sent_num_CN_classifier, GPTon_US$answer_eng_sent_num_CN_classifier, paired = F)
+# t = -3.2519, df = 526.84, p-value = 0.00122
+
+
+# For the same US-focused questions, the mean sentiment of cn GPT vs. eng GPT
+## EN classifier
+t.test(GPTon_US$answer_cn_sent_num_EN_classifier, GPTon_US$answer_eng_sent_num_EN_classifier, paired = T)
+# t = -1.5897, df = 265, p-value = 0.1131
+## CN classifier
+t.test(GPTon_US$answer_cn_sent_num_CN_classifier, GPTon_US$answer_eng_sent_num_CN_classifier, paired = T)
+# t = 0.22321, df = 266, p-value = 0.8235
+
+
+# For the same CN-focused questions, the mean sentiment of cn GPT vs. eng GPT 
+## EN classifier
+t.test(GPTon_CN$answer_cn_sent_num_EN_classifier, GPTon_CN$answer_eng_sent_num_EN_classifier, paired = T)
+#t = 10.015, df = 264, p-value < 2.2e-16
+## CN classifier
+t.test(GPTon_CN$answer_cn_sent_num_CN_classifier, GPTon_CN$answer_eng_sent_num_CN_classifier, paired = T)
+# t = 8.3134, df = 265, p-value = 4.901e-15
+
+```
+
+```{r sentiment OLS}
+# create a subset that contains only political questions
+df_nosci = df %>% 
+  filter(accused_problem == 1)
+df_nosci$topic_focus = factor(df_nosci$topic_focus, levels = c("US", "CN"))
+
+## CN classifier
+m1_sg4 = lm(answer_sent_cn_eng_diff_CN_classifier ~ topic_focus, data = df_nosci)
+summary(m1_sg4)$coefficients[,4]
+m2_sg4 = lm(answer_sent_cn_eng_diff_CN_classifier ~ topic_focus + consist_CN_classifier_num + fact_or_opinion + binary_or_statement + answer_cn_length_diff, data = df_nosci)
+summary(m2_sg4)$coefficients[,4]
+
+## EN classifier
+m4_sg4 = lm(answer_sent_cn_eng_diff_EN_classifier ~ topic_focus, data = df_nosci)
+summary(m4_sg4)$coefficients[,4]
+m5_sg4 = lm(answer_sent_cn_eng_diff_EN_classifier ~ topic_focus + consist_EN_classifier_num + fact_or_opinion + binary_or_statement + answer_eng_length_diff, data = df_nosci)
+summary(m5_sg4)$coefficients[,4]
+
+
+stargazer(m1_sg4, m2_sg4, m4_sg4, m5_sg4, 
+          type = "text",
+          omit.stat = c("f", "ser"),
+          star.char = c("*", "**", "***"),
+          star.cutoffs = c(.05, .01, .005))
+
+```
