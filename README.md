@@ -1,5 +1,5 @@
 # GPT_political_bias
-Replication data and code for the paper: Political Biases and Inconsistencies in Bilingual GPT Models—The Cases of the U.S. and China （forthcoming!)
+Replication data and code for the paper: Political Biases and Inconsistencies in Bilingual GPT Models—The Cases of the U.S. and China (forthcoming!)
 
 This repository contains the data and code used to produce the analysis and robustness checks presented in the paper. The data and analysis codes are presented for results obtained from GPT 3.5 and GPT 4. 
 
